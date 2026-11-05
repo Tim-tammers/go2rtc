@@ -22,3 +22,6 @@ website/.vitepress/dist
 node_modules
 package-lock.json
 CLAUDE.md
+
+# local SEI timestamp debugging tool
+examples/sei_reader/

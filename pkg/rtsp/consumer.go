@@ -52,7 +52,7 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 	// save original codec to sender (can have Codec.Name = ANY)
 	sender := core.NewSender(media, codec)
 	// important to send original codec for valid IsRTP check
-	sender.Handler = c.packetWriter(track.Codec, channel, codec.PayloadType)
+	sender.Handler = c.packetWriter(track.Codec, channel, codec.PayloadType, track.Stamper)
 
 	if c.mode == core.ModeActiveProducer && track.Codec.Name == core.CodecPCMA {
 		// Fix Reolink Doorbell https://github.com/AlexxIT/go2rtc/issues/331
@@ -73,7 +73,7 @@ const (
 	intHdr        = 4           // interleaved header size
 )
 
-func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.HandlerFunc {
+func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8, stamper core.SEIStamper) core.HandlerFunc {
 	var buf []byte
 	var n int
 
@@ -148,7 +148,15 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 		flushBuf()
 	}
 
-	if !codec.IsRTP() {
+	if stamper != nil && codec.Name == core.CodecH264 {
+		// SEI timestamps: frames must be complete AVCC access units, so RTP
+		// sources are depayed -> stamped -> repayed instead of passed through
+		handlerFunc = h264.RTPPay(c.PacketSize, handlerFunc)
+		handlerFunc = h264.SEIStamp(stamper, handlerFunc)
+		if codec.IsRTP() {
+			handlerFunc = h264.RTPDepay(codec, handlerFunc)
+		}
+	} else if !codec.IsRTP() {
 		switch codec.Name {
 		case core.CodecH264:
 			handlerFunc = h264.RTPPay(c.PacketSize, handlerFunc)

@@ -49,6 +49,10 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 	switch track.Codec.Name {
 	case core.CodecH264:
 		sender.Handler = h264.RTPPay(1200, sender.Handler)
+		if track.Stamper != nil {
+			// after RTPDepay / RepairAVCC (complete AVCC frames), before RTPPay
+			sender.Handler = h264.SEIStamp(track.Stamper, sender.Handler)
+		}
 		if track.Codec.IsRTP() {
 			sender.Handler = h264.RTPDepay(track.Codec, sender.Handler)
 		} else {

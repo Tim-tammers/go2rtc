@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/h264"
 )
 
 type state byte
@@ -27,6 +28,9 @@ type Producer struct {
 	url      string
 	template string
 
+	// sei - source has the #sei flag: attach h264.Stamper to H264 tracks
+	sei bool
+
 	conn      core.Producer
 	receivers []*core.Receiver
 	senders   []*core.Receiver
@@ -39,16 +43,66 @@ type Producer struct {
 const SourceTemplate = "{input}"
 
 func NewProducer(source string) *Producer {
+	source, sei := cutSEI(source)
+
 	if strings.Contains(source, SourceTemplate) {
-		return &Producer{template: source}
+		return &Producer{template: source, sei: sei}
 	}
 
-	return &Producer{url: source}
+	return &Producer{url: source, sei: sei}
+}
+
+// cutSEI removes the "#sei" flag from a source URL. The flag is handled here
+// and never reaches the source handlers (so it also survives redirects, e.g.
+// onvif:// -> rtsp://). Other #params are kept in their original order.
+func cutSEI(source string) (string, bool) {
+	i := strings.IndexByte(source, '#')
+	if i < 0 {
+		return source, false
+	}
+
+	var found bool
+	params := strings.Split(source[i+1:], "#")
+	kept := params[:0]
+	for _, param := range params {
+		if param == "sei" {
+			found = true
+			continue
+		}
+		kept = append(kept, param)
+	}
+
+	if !found {
+		return source, false
+	}
+	if len(kept) == 0 {
+		return source[:i], true
+	}
+	return source[:i] + "#" + strings.Join(kept, "#"), true
+}
+
+// attachStamper enables SEI timestamps on a new H264 track. On reconnect the
+// stamper of the previous track is reused (reset), so consumers keep working.
+func (p *Producer) attachStamper(track, prev *core.Receiver) {
+	if !p.sei || track.Codec.Name != core.CodecH264 {
+		return
+	}
+
+	if prev != nil {
+		if stamper, ok := prev.Stamper.(*h264.Stamper); ok {
+			stamper.Reset()
+			track.Stamper = stamper
+			return
+		}
+	}
+
+	track.Stamper = h264.NewStamper(track.Codec.ClockRate)
+	log.Debug().Msgf("[streams] sei stamper on url=%s", p.url)
 }
 
 func (p *Producer) SetSource(s string) {
 	if p.template == "" {
-		p.url = s
+		p.url, p.sei = cutSEI(s)
 	} else {
 		p.url = strings.Replace(p.template, SourceTemplate, s, 1)
 	}
@@ -100,6 +154,8 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 	if err != nil {
 		return nil, err
 	}
+
+	p.attachStamper(track, nil)
 
 	p.receivers = append(p.receivers, track)
 
@@ -216,6 +272,8 @@ func (p *Producer) reconnect(workerID, retry int) {
 				if err != nil {
 					continue
 				}
+
+				p.attachStamper(track, receiver)
 
 				receiver.Replace(track)
 				p.receivers[i] = track

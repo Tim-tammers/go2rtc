@@ -19,6 +19,18 @@ type Receiver struct {
 
 	Bytes   int `json:"bytes,omitempty"`
 	Packets int `json:"packets,omitempty"`
+
+	// Stamper - optional per-frame timestamp source (h264.Stamper), set by the
+	// stream before the producer starts. Consumers use it to insert SEI.
+	Stamper SEIStamper `json:"-"`
+}
+
+// SEIStamper - assigns a timestamp to every frame on the producer side
+// (Observe) and returns the encoded SEI NAL unit for a frame on the consumer
+// side (LookupSEI). Implemented by h264.Stamper.
+type SEIStamper interface {
+	Observe(ts uint32)
+	LookupSEI(ts uint32) ([]byte, bool)
 }
 
 func NewReceiver(media *Media, codec *Codec) *Receiver {
@@ -29,6 +41,9 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 	r.Input = func(packet *Packet) {
 		r.Bytes += len(packet.Payload)
 		r.Packets++
+		if r.Stamper != nil {
+			r.Stamper.Observe(packet.Timestamp)
+		}
 		for _, child := range r.childs {
 			child.Input(packet)
 		}
